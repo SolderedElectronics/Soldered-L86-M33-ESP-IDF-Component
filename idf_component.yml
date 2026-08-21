@@ -1,4 +1,4 @@
-version: "0.0.3"
-description: "A simple example component"
-url: "https://github.com/SolderedElectronics/soldered-esp-idf-component-template"
+version: "1.0.0"
+description: "Soldered GNSS GPS L86-M33 Breakout component"
+url: "https://github.com/SolderedElectronics/Soldered-L86-M33-ESP-IDF-Component"
 license: "GPL-3.0"
