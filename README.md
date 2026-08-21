@@ -1,40 +1,72 @@
-# Soldered NAZIV PROIZVODA Component
+# Soldered GNSS GPS L86-M33 Breakout Component
 
-| ![Product name](https://upload.wikimedia.org/wikipedia/commons/8/8f/Example_image.svg) |
-| :------------------------------------------------------------------------------------: |
-|                      [NAZIV PROIZVODA](https://www.solde.red/SKU)                      |
+| ![GNSS GPS L86-M33 Breakout](https://cms.soldered.com/products/333201/media/333201_featured-photo_38c8b2.jpg) |
+| :----------------------------------------------------------------------------------------------------------: |
+|                        [GNSS GPS L86-M33 Breakout](https://solde.red/333201)                                 |
 
-OPIS PROIZVODA + LINK NA [Qwiic ecosystem](https://soldered.com/collections/qwiic-ecosystem).
-
-### Using the template
-
-Before publishing a new component make sure to replace:
-
-- `NAZIV PROIZVODA`, `OPIS PROIZVODA`, product image, SKU link, and the "Original source" line in this README
-- `version`, `description`, `url` in `idf_component.yml`
-- `components:` name and `namespace:` in `.github/workflows/upload_component.yml`
-- filenames in `src/` and `include/` plus matching `SRCS` and `INCLUDE_DIRS` in `CMakeLists.txt` and `#include` in the `.c` file
-- dependency key in `examples/.../idf_component.yml` (path stays `../../..`)
-- `@file`, `@brief`, `@param`, `@return` Doxygen comments in `include/*.h`, `src/*.c`, and `examples/basic/main/main.c` to describe the real API
-
-Also make sure to add examples.
-
-Run `./format.sh` before committing to auto-format `src/`, `include/`, and the example against the project's astyle rules (`.astyle-rules.yml`). CI runs the same check on every push/PR via `.github/workflows/format-check.yml` and fails on unformatted code.
-
-**Remove this section of README after everything is done!**
-
-For uploading to Registry you need to register a trusted publisher under a component. To make the release to the registry you must bump `version` in `idf_component.yml` to `X.Y.Z`, push that commit, and confirm Format Check + Build Examples both pass on it (Actions tab) before tagging. Only once both are green: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+ESP-IDF driver for the Soldered GNSS GPS L86-M33 Breakout, built around the Quectel L86-M33 GNSS module with its patch antenna on top. Tracks GPS, GLONASS and Galileo, gets a first fix in about 15 s from a warm start and a position update up to ten times a second, and reports position, altitude, speed, course and satellite time over UART.
 
 ### Repository Contents
 
 - **/src** - source files (.c)
+  - `soldered_l86_m33.c` - the driver
+  - `l86_m33_nmea.c` - the NMEA sentence decoder
 - **/include** - header files (.h)
+  - `soldered_l86_m33.h` - the public API
+  - `l86_m33_dfs.h` - NMEA and PMTK definitions and enumerations
+  - `l86_m33_nmea.h` - decoder state, used through the API above
 - **/examples** - examples for using the library
+  - `basic_readings` - read the position and the UTC date and time
+  - `full_data` - print everything the module reports as a table, driven by a callback
+  - `advanced_features` - interference cancellation, orbit prediction, fix rate, sentence filtering and AlwaysLocate
+  - `distance_and_course` - work out how far away somewhere else is and which way it is
 - **_other_** - idf_component.yml manifest file for ESP Component Registry
+
+### Usage
+
+The module sends NMEA sentences as soon as it is powered, so opening the UART is all the setup it needs. Wire the TX pin of the module to a receive pin on the ESP32, and its RX pin to a transmit pin if commands are going to be sent:
+
+```c
+l86_m33_t gnss;
+l86_m33_config_t config = L86_M33_DEFAULT_CONFIG(GPIO_NUM_16, GPIO_NUM_17);
+ESP_ERROR_CHECK(l86_m33_init(&gnss, &config));
+
+while (1) {
+    // Reads and decodes for 500 ms instead of sleeping through them
+    ESP_ERROR_CHECK(l86_m33_update_timeout(&gnss, 500));
+
+    double latitude, longitude;
+    if (l86_m33_get_location(&gnss, &latitude, &longitude) == ESP_OK) {
+        printf("%.6f, %.6f\n", latitude, longitude);
+    }
+}
+```
+
+**Feeding the decoder:** the module keeps talking whether or not anybody is listening, so `l86_m33_update()` has to be called often enough that the UART receive buffer never overflows - at the default fix rate a few times a second. In a loop that has nothing else to do, `l86_m33_update_timeout()` replaces a plain delay and keeps decoding for the whole wait. A callback registered with `l86_m33_set_fix_callback()` then fires from inside those calls, once per decoded sentence.
+
+**Reading data:** every getter returns `ESP_ERR_INVALID_STATE` until the module has actually reported that quantity, so a fresh start reads as no data rather than as zeroes. `l86_m33_get_data()` reads everything at once into an `l86_m33_data_t` snapshot with a validity flag per field, which is the easier route when several values are used together. Position, date, time, speed and course are only ever updated from a sentence that reported a fix; the satellite count, HDOP and fix quality are updated either way, which is what makes it possible to tell a module that is still searching from one that is not talking at all. `l86_m33_get_location_age()` tells a fresh position from the last known one after the fix was lost, and `l86_m33_get_stats()` returns the character and checksum counters, which is where a wiring or baud rate problem shows up.
+
+**Getting a fix:** the module needs a clear view of the sky, so it belongs outdoors or at least at a window, and the first fix after a cold start can take a minute or more. The patch antenna on the board is all it needs - connecting an external antenna as well makes fixes take much longer. The battery holder backs up the clock and the assistance data so that later starts are warm ones.
+
+**Configuration:** `l86_m33_set_fix_interval()` sets how often a position is worked out, from 100 ms to 10 s, and `l86_m33_set_nmea_output()` sets which sentences come out and how often, which is what keeps the UART from being flooded at a fast fix rate. `l86_m33_set_multi_tone_aic()` notches out narrowband interference from nearby regulators, displays and radios, and `l86_m33_set_easy()` has the module predict the satellite orbits itself to shorten the time to first fix. Anything else out of the PMTK command set is sent with `l86_m33_send_command()`, which takes the sentence without its checksum and appends the one it works out:
+
+```c
+ESP_ERROR_CHECK(l86_m33_send_command(&gnss, "$PMTK605"));    // asks for the firmware version
+```
+
+**Power:** `l86_m33_set_always_locate()` hands the duty cycling over to the module, which then sleeps and wakes on its own depending on how much the position is moving; updates stop arriving on a fixed schedule, so watch the age of the position rather than expecting a new one. `l86_m33_standby()` stops the receiver altogether, and `l86_m33_wake_up()` brings it back.
+
+**Geography:** `l86_m33_distance_between()` and `l86_m33_course_to()` work out the great circle distance and initial course between two positions, and `l86_m33_cardinal()` turns a course into a compass point. Watching the distance to a fixed position is all a geofence needs.
+
+This component drives the module over UART, which is how the breakout above is wired. The easyC version of the board, [www.solde.red/333213](https://solde.red/333213), answers on I2C instead and is not covered here.
+
+### Original source
+
+This is a port of the [Soldered GNSS L86-M33 Arduino library](https://github.com/SolderedElectronics/Soldered-GNSS-L86-M33-Arduino-Library), whose NMEA parsing comes from [TinyGPSPlus](https://github.com/mikalhart/TinyGPSPlus) by Mikal Hart, which the decoder here follows. Thank you, Mikal Hart.
 
 ### Hardware design
 
-You can find hardware design for this board in _NAZIV PROIZVODA_ hardware repository.
+You can find hardware design for this board in _GNSS GPS L86-M33 Breakout_ hardware repository.
 
 ### Documentation
 
@@ -49,10 +81,6 @@ At Soldered, we design and manufacture a wide selection of electronic products t
 - [Web Store](https://www.soldered.com/shop)
 - [Tutorials & Projects](https://soldered.com/learn)
 - [Documentation](https://docs.soldered.com)
-
-### Original source
-
-This library is possible thanks to original [arduino-mcp23017](https://github.com/blemasle/arduino-mcp23017) library. Thank you, blemasle.
 
 ### Open-source license
 
