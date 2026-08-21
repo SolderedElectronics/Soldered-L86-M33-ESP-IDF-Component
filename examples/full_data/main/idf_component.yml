@@ -1,0 +1,3 @@
+dependencies:
+  Soldered-L86-M33-ESP-IDF-Component:
+    path: "../../.."
